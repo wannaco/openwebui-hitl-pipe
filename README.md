@@ -14,13 +14,15 @@ Works with **any** tool server configured in Open WebUI — MCPO, native MCP, bu
 ## Architecture
 ```
 User → Open WebUI → Pipe (owns the agentic loop)
-                       ├── __tools__ (tool specs + callables from Open WebUI)
+                       ├── __tools__ (tool specs from Open WebUI)
                        ├── LLM endpoint (POST /v1/chat/completions)
                        ├── __event_call__ (confirmation dialogs)
-                       └── callable(**args) (tool execution)
+                       └── Tool execution:
+                             ├── callable(**args) — if Open WebUI provides one
+                             └── HTTP POST to tool server — MCPO fallback
 ```
 
-Open WebUI passes tool definitions and callables to the pipe via `__tools__`. The pipe converts specs to OpenAI format, sends them to the LLM, and calls the callables directly — no HTTP needed for tool execution.
+Open WebUI passes tool definitions to the pipe via `__tools__`. The pipe converts specs to OpenAI format, sends them to the LLM, and executes tools either via callable (if provided) or HTTP POST to the tool server.
 
 ## Setup
 1. Paste `human-in-the-loop-pipe.py` into **Admin → Functions**
@@ -52,13 +54,14 @@ Open WebUI passes tool definitions and callables to the pipe via `__tools__`. Th
 
 ## Key Technical Details
 
-- **Tool source**: Open WebUI passes `__tools__` to the pipe — a dict of `{name: {spec, callable, tool_id, type}}`. The pipe extracts `spec` for LLM tool definitions and calls `callable` for execution.
-- **Tool-server fallback**: Some tool servers inject tools without a callable (keys: `spec`, `direct`, `server`). The pipe falls back to HTTP POST to the server URL using MCPO naming conventions.
-- **Tool execution**: `await callable(**args)` — returns a tuple, first element is the result
+- **Tool source**: Open WebUI passes `__tools__` to the pipe — two formats exist:
+  - `{spec, callable, tool_id, type}` — tools with a direct callable
+  - `{spec, direct, server}` — tool-server tools (MCPO) with a server URL
+- **Tool execution**: Tries `callable(**args)` first; falls back to HTTP POST to `server.url` using MCPO naming convention (`tool_{path}_{method}` → `POST /{path}`)
 - **Native UI rendering**: Yields `<details type="tool_calls">` blocks — Open WebUI renders these as collapsible tool result cards
 - **Streaming**: `pipe()` is an async generator (`yield`), not a return
 - **Confirmation**: Uses `__event_call__({"type": "confirmation", ...})` — returns truthy if approved, falsy if rejected/dismissed
-- **Rejection tracking**: After 2 rejections of the same tool, auto-rejects and tells the LLM to stop retrying
+- **Rejection tracking**: After 2 rejections of the same tool, auto-rejects without prompting and tells the LLM to try a different approach
 
 ## Known Limitations
 - Clicking outside the confirmation modal = dismiss = rejection (Open WebUI behavior)
