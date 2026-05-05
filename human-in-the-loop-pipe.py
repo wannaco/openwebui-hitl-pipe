@@ -114,6 +114,18 @@ class Pipe:
 
         url = f"{base_url}/{path}"
 
+        # Pre-flight: decode base64 content args for file write operations
+        # The LLM may base64-encode content (following MCPO spec or learned pattern),
+        # but the MCP tool will encode it again internally → double-encoding.
+        if "content" in args and isinstance(args["content"], str):
+            try:
+                decoded = base64.b64decode(args["content"]).decode("utf-8")
+                # Only replace if it decoded to something that looks like text
+                if decoded.isprintable() or "\n" in decoded:
+                    args = {**args, "content": decoded}
+            except (ValueError, UnicodeDecodeError, base64.binascii.Error):
+                pass
+
         try:
             async with httpx.AsyncClient(timeout=self.valves.REQUEST_TIMEOUT) as client:
                 r = await client.post(url, json=args)
@@ -122,6 +134,12 @@ class Pipe:
                 # Try to parse and clean up JSON response
                 try:
                     data = r.json()
+                    # If response is a string, try parsing it as JSON
+                    if isinstance(data, str):
+                        try:
+                            data = json.loads(data)
+                        except (json.JSONDecodeError, ValueError):
+                            return data
                     data = self._decode_base64_fields(data)
                     return json.dumps(data, indent=2, default=str)
                 except (json.JSONDecodeError, ValueError):
@@ -285,10 +303,19 @@ class Pipe:
                     name = fn_info.get("name", "unknown")
                     try:
                         args = json.loads(fn_info.get("arguments", "{}"))
-                        args_pretty = json.dumps(args, indent=2)
                     except (json.JSONDecodeError, TypeError):
                         args = {}
-                        args_pretty = fn_info.get("arguments", "{}")
+
+                    # Decode base64 content args for display (and execution)
+                    if "content" in args and isinstance(args["content"], str):
+                        try:
+                            decoded = base64.b64decode(args["content"]).decode("utf-8")
+                            if decoded.isprintable() or "\n" in decoded:
+                                args["content"] = decoded
+                        except (ValueError, UnicodeDecodeError, base64.binascii.Error):
+                            pass
+
+                    args_pretty = json.dumps(args, indent=2)
 
                     # Auto-approve read-only
                     if self.valves.AUTO_APPROVE_READ_ONLY and self._is_read_only(name):
