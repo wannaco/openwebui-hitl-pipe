@@ -1,7 +1,7 @@
 """
 title: Human in the Loop
 author: assistant
-version: 5.3.0
+version: 5.4.0
 required_open_webui_version: 0.5.0
 description: HITL agentic pipe — uses tools from Open WebUI (toggle in chat UI), calls any OpenAI-compatible LLM, and intercepts every tool call with a confirmation dialog.
 """
@@ -9,6 +9,7 @@ description: HITL agentic pipe — uses tools from Open WebUI (toggle in chat UI
 import json
 import html
 import inspect
+import base64
 import httpx
 from pydantic import BaseModel, Field
 from typing import Optional, AsyncGenerator
@@ -118,15 +119,34 @@ class Pipe:
                 r = await client.post(url, json=args)
                 r.raise_for_status()
                 text = r.text
-                # Try to pretty-print JSON
+                # Try to parse and clean up JSON response
                 try:
-                    return json.dumps(r.json(), indent=2, default=str)
+                    data = r.json()
+                    data = self._decode_base64_fields(data)
+                    return json.dumps(data, indent=2, default=str)
                 except (json.JSONDecodeError, ValueError):
                     return text
         except httpx.HTTPStatusError as e:
             return json.dumps({"error": f"HTTP {e.response.status_code}: {e.response.text[:500]}"})
         except Exception as e:
             return json.dumps({"error": f"{type(e).__name__}: {e}"})
+
+    def _decode_base64_fields(self, data):
+        """Decode base64 content fields in API responses to prevent double-encoding."""
+        if isinstance(data, dict):
+            if data.get("encoding") == "base64" and "content" in data:
+                try:
+                    data["content"] = base64.b64decode(data["content"]).decode("utf-8")
+                    data["encoding"] = "plain"
+                except (ValueError, UnicodeDecodeError):
+                    pass
+            # Recurse into nested dicts
+            for key, val in data.items():
+                if isinstance(val, (dict, list)):
+                    data[key] = self._decode_base64_fields(val)
+        elif isinstance(data, list):
+            data = [self._decode_base64_fields(item) for item in data]
+        return data
 
     # ------------------------------------------------------------------
     # Tool execution via callable
